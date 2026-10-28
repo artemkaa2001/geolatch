@@ -23,9 +23,9 @@ PAYLOAD = b"GeoLatch kernel packet test"
 TIMEOUT = 0.45
 
 
-def command(*args: str, source: str | None = None) -> str:
+def command(*args: str, source: str | None = None, timeout: float = 15) -> str:
     result = subprocess.run(
-        args, input=source, capture_output=True, text=True, timeout=15, check=False
+        args, input=source, capture_output=True, text=True, timeout=timeout, check=False
     )
     if result.returncode:
         raise RuntimeError(f"{args[0]} failed ({result.returncode}): {result.stderr}")
@@ -165,24 +165,94 @@ class EchoServers:
 
 
 def request(payload: dict[str, Any]) -> bool:
+    return request_result(payload)["received"]
+
+
+def request_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Retain the failed socket phase so a topology failure is diagnosable."""
     family = socket.AF_INET6 if ":" in payload["destination"] else socket.AF_INET
     kind = socket.SOCK_STREAM if payload["protocol"] == "tcp" else socket.SOCK_DGRAM
+    phase = "create"
     try:
         with socket.socket(family, kind) as connection:
-            connection.settimeout(TIMEOUT)
+            connection.settimeout(payload.get("timeout", TIMEOUT))
+            phase = "bind"
             connection.bind((payload["source"], 0))
+            phase = "connect"
             connection.connect((payload["destination"], payload["port"]))
+            phase = "send"
             connection.sendall(PAYLOAD)
-            return connection.recv(len(PAYLOAD)) == PAYLOAD
-    except OSError:
-        return False
+            phase = "receive"
+            received = connection.recv(len(PAYLOAD)) == PAYLOAD
+            return {"received": received, "phase": phase}
+    except OSError as error:
+        return {"received": False, "phase": phase, "error": str(error), "errno": error.errno}
 
 
-def probe(peer: NetworkNamespace, source: str, destination: str, protocol: str, port: int) -> bool:
-    payload = {"source": source, "destination": destination, "protocol": protocol, "port": port}
-    return json.loads(peer.run(sys.executable, str(HERE), "request", json.dumps(payload)))[
-        "received"
+def network_diagnostics(
+    peer: NetworkNamespace, destination_peer: NetworkNamespace | None = None
+) -> dict[str, Any]:
+    """Bounded read-only evidence from the already isolated test topology."""
+    namespaces = [("router", []), ("source", peer.args())]
+    if destination_peer is not None:
+        namespaces.append(("destination", destination_peer.args()))
+    diagnostics: dict[str, Any] = {}
+    commands = [
+        ("addresses", ["ip", "-j", "address", "show"]),
+        ("ipv4_routes", ["ip", "-j", "route", "show", "table", "all"]),
+        ("ipv6_routes", ["ip", "-j", "-6", "route", "show", "table", "all"]),
+        ("neighbors", ["ip", "-j", "neighbor", "show"]),
+        ("forwarding4", ["sysctl", "-n", "net.ipv4.ip_forward"]),
+        ("forwarding6", ["sysctl", "-n", "net.ipv6.conf.all.forwarding"]),
+        ("rp_filter", ["sysctl", "-n", "net.ipv4.conf.all.rp_filter"]),
     ]
+    for name, prefix in namespaces:
+        evidence = {}
+        for label, args in commands:
+            try:
+                evidence[label] = command(*prefix, *args, timeout=2)[:12000]
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                evidence[label] = str(error)[:2000]
+        diagnostics[name] = evidence
+    try:
+        diagnostics["router_nft"] = command("nft", "--list", "ruleset", timeout=2)[:16000]
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        diagnostics["router_nft"] = str(error)[:2000]
+    return diagnostics
+
+
+def probe(
+    peer: NetworkNamespace,
+    source: str,
+    destination: str,
+    protocol: str,
+    port: int,
+    *,
+    context: str | None = None,
+    destination_peer: NetworkNamespace | None = None,
+    timeout: float = TIMEOUT,
+) -> bool:
+    payload = {
+        "source": source,
+        "destination": destination,
+        "protocol": protocol,
+        "port": port,
+        "timeout": timeout,
+    }
+    result = json.loads(peer.run(sys.executable, str(HERE), "request", json.dumps(payload)))
+    if not result["received"] and context:
+        raise AssertionError(
+            json.dumps(
+                {
+                    "context": context,
+                    "probe": payload,
+                    "result": result,
+                    "network": network_diagnostics(peer, destination_peer),
+                },
+                indent=2,
+            )
+        )
+    return result["received"]
 
 
 def link(peer: NetworkNamespace, local: str, remote: str, ipv4: str, ipv6: str) -> None:
@@ -469,16 +539,41 @@ def dnat(peer: NetworkNamespace, servers: EchoServers) -> None:
             for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
                 for protocol in ("tcp", "udp"):
                     assert probe(
-                        peer, prefix + "2", prefix + "10", protocol, ports[f"{protocol}{family}"]
+                        peer,
+                        prefix + "2",
+                        prefix + "10",
+                        protocol,
+                        ports[f"{protocol}{family}"],
+                        context="pre-GeoLatch DNAT connectivity baseline",
+                        destination_peer=container,
+                        timeout=2.0,
                     )
             install()
             for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
                 for protocol in ("tcp", "udp"):
                     assert not probe(
-                        peer, prefix + "2", prefix + "10", protocol, ports[f"{protocol}{family}"]
+                        peer,
+                        prefix + "2",
+                        prefix + "10",
+                        protocol,
+                        ports[f"{protocol}{family}"],
+                        timeout=2.0,
+                    ), (
+                        "GeoLatch blocks selected pre-DNAT destination",
+                        family,
+                        protocol,
+                        prefix + "2",
+                        prefix + "10",
                     )
                     assert probe(
-                        peer, prefix + "3", prefix + "10", protocol, ports[f"{protocol}{family}"]
+                        peer,
+                        prefix + "3",
+                        prefix + "10",
+                        protocol,
+                        ports[f"{protocol}{family}"],
+                        context="allowed source reaches selected pre-DNAT destination",
+                        destination_peer=container,
+                        timeout=2.0,
                     )
                     assert probe(
                         peer,
@@ -486,6 +581,9 @@ def dnat(peer: NetworkNamespace, servers: EchoServers) -> None:
                         prefix + "20",
                         protocol,
                         servers.ports[f"{protocol}{family}"],
+                        context="unselected local destination remains reachable with DNAT enabled",
+                        destination_peer=container,
+                        timeout=2.0,
                     )
         finally:
             stop(remote)
@@ -557,7 +655,16 @@ def scope(peer: NetworkNamespace, servers: EchoServers) -> None:
                 (6, "2001:db8::2", "fd00:20::2"),
             ):
                 for protocol in ("tcp", "udp"):
-                    assert probe(peer, source, destination, protocol, ports[f"{protocol}{family}"])
+                    assert probe(
+                        peer,
+                        source,
+                        destination,
+                        protocol,
+                        ports[f"{protocol}{family}"],
+                        context="unrelated forwarded destination remains reachable",
+                        destination_peer=transit,
+                        timeout=2.0,
+                    )
         finally:
             stop(remote)
 
@@ -601,7 +708,7 @@ def main() -> None:
         print(json.dumps({"network_namespace": os.readlink("/proc/self/ns/net")}), flush=True)
         sys.stdin.read()
     elif mode == "request":
-        print(json.dumps({"received": request(json.loads(sys.argv[2]))}))
+        print(json.dumps(request_result(json.loads(sys.argv[2]))))
     elif mode == "serve":
         with EchoServers(tuple(json.loads(sys.argv[2])["hosts"])) as servers:
             print(json.dumps({"ports": servers.ports}), flush=True)

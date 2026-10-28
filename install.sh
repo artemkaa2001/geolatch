@@ -131,6 +131,8 @@ python3 -m venv "$geolatch_release/venv"
 install -o root -g root -m 0755 "$geolatch_source/uninstall.sh" "$geolatch_release/uninstall.sh"
 
 if (( geolatch_repair_pending )); then
+    message 'Waiting up to 120 seconds for another GeoLatch operation to finish before recovery…' \
+        'Ожидание завершения другой операции GeoLatch перед восстановлением (до 120 секунд)…'
     "$geolatch_release/venv/bin/python" -I -m geolatch --json _repair_pending
 fi
 

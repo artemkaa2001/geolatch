@@ -126,7 +126,7 @@ class Controller:
             return load_config(self.paths.recovered_draft)
         return None
 
-    def repair_pending(self) -> dict:
+    def repair_pending(self, lock_timeout: float = 120.0) -> dict:
         """Use the newly installed backend to undo an interrupted old apply.
 
         Preserve the user's candidate before journal removal. The next TUI
@@ -134,7 +134,7 @@ class Controller:
         A foreign table or corrupt journal still aborts recovery without deletion.
         """
         self._require_root()
-        with operation_lock(self.paths.state_dir):
+        with operation_lock(self.paths.state_dir, timeout=lock_timeout):
             if not self.paths.pending.exists():
                 return {"recovered": False}
             pending = self._pending()

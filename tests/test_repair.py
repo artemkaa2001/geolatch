@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -199,10 +200,52 @@ def test_repair_does_not_race_another_mutation(interrupted):
     mutations = len(controller.nft.applied)
     with operation_lock(interrupted.paths.state_dir):
         with pytest.raises(RuntimeError, match="Another GeoLatch"):
-            controller.repair_pending()
+            controller.repair_pending(lock_timeout=0)
     assert interrupted.paths.pending.exists()
     assert not interrupted.paths.recovered_draft.exists()
     assert len(controller.nft.applied) == mutations
+
+
+def test_repair_waits_for_existing_mutation_before_reading_or_modifying_state(interrupted):
+    from test_operation_lock import held_by_child, release_holder
+
+    controller = interrupted.controller
+    original_journal = interrupted.paths.pending.read_bytes()
+    original_config = interrupted.paths.config_file.read_bytes()
+    mutations = len(controller.nft.applied)
+    finished = threading.Event()
+    result = {}
+    errors = []
+
+    def repair():
+        try:
+            result.update(controller.repair_pending(lock_timeout=2))
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    with held_by_child(interrupted.paths.state_dir) as holder:
+        thread = threading.Thread(target=repair)
+        thread.start()
+        try:
+            assert not finished.wait(0.1)
+            assert interrupted.paths.pending.read_bytes() == original_journal
+            assert interrupted.paths.config_file.read_bytes() == original_config
+            assert not interrupted.paths.recovered_draft.exists()
+            assert len(controller.nft.applied) == mutations
+            release_holder(holder)
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+            assert errors == []
+            assert result["recovered"] is True
+            assert controller.recovered_draft() == interrupted.desired
+            assert not interrupted.paths.pending.exists()
+            assert controller.nft.rules == interrupted.before_rules
+        finally:
+            if holder.poll() is None:
+                release_holder(holder)
+            thread.join(timeout=3)
 
 
 def test_recovered_candidate_is_removed_only_after_explicit_successful_confirmation(interrupted):

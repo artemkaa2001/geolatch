@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geolatch"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight Linux GeoIP firewall manager with per-IP country blocking, automatic updates, bilingual terminal UI and safe rollback."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — wait for a running rollback during repair
+
+- Explicit repair waits up to 120 seconds for the existing operation lock, allowing a retrying old watchdog to finish its current attempt.
+- Preserve the same lock inode and pending journal; do not terminate the watchdog or run concurrent firewall mutations. Ordinary commands still fail fast on contention.
+- Close the waiting file descriptor on timeout or interruption. Cover contention with real separate-process flock tests.
+
 ## 0.1.1 — nftables compatibility and interrupted-apply recovery
 
 - Verify ownership and chain revisions through text when older nftables versions omit comments from JSON; explicit foreign markers are still rejected.
