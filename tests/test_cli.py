@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from geolatch.config import default_config, save_config
+from geolatch.metadata import VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,7 +63,7 @@ def test_version_supports_json_before_or_after_command(cli, args: tuple[str, ...
     value = output(cli(*args))
     assert value == {
         "name": "GeoLatch",
-        "version": "0.1.0",
+        "version": VERSION,
         "developer": "@artemkaa_2001",
         "telegram": "https://t.me/artemkaa_2001",
     }

@@ -1078,7 +1078,8 @@ class GeoLatchApp(App[None]):
         self.controller = controller
         self._controller_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="geolatch-ui")
         self.original = copy.deepcopy(controller.config())
-        self.draft = copy.deepcopy(self.original)
+        recovered = controller.recovered_draft() if hasattr(controller, "recovered_draft") else None
+        self.draft = copy.deepcopy(recovered if recovered is not None else self.original)
         self.language = language or self.draft.get("language", "en")
         self.setup_mode = setup or not bool(self.draft.get("policies"))
         self.active_policy = 0
@@ -1188,6 +1189,11 @@ class GeoLatchApp(App[None]):
 
     def on_mount(self) -> None:
         self.push_screen(LanguageScreen() if self.setup_mode else MainScreen())
+        if (
+            hasattr(self.controller, "recovered_draft")
+            and self.controller.recovered_draft() is not None
+        ):
+            self.notify(self.tr("recovery.draft_restored"), timeout=12)
         self.load_environment()
 
     @work(exclusive=True)

@@ -121,6 +121,27 @@ class Controller:
     def config(self) -> dict:
         return load_config(self.paths.config_file)
 
+    def recovered_draft(self) -> dict | None:
+        if self.paths.recovered_draft.exists():
+            return load_config(self.paths.recovered_draft)
+        return None
+
+    def repair_pending(self) -> dict:
+        """Use the newly installed backend to undo an interrupted old apply.
+
+        Preserve the user's candidate before journal removal. The next TUI
+        session loads it as an unapplied draft, requiring a new safe apply.
+        A foreign table or corrupt journal still aborts recovery without deletion.
+        """
+        self._require_root()
+        with operation_lock(self.paths.state_dir):
+            if not self.paths.pending.exists():
+                return {"recovered": False}
+            pending = self._pending()
+            save_config(pending["candidate"]["config"], self.paths.recovered_draft)
+            result = self._recover_pending(pending)
+            return {**result, "recovered": True, "draft_path": str(self.paths.recovered_draft)}
+
     def addresses(self) -> list[dict]:
         return discover_addresses()
 
@@ -358,6 +379,8 @@ class Controller:
         # deliberately treated as unconfirmed, even if a snapshot was written.
         self._event("confirmed", source=pending["candidate"]["config"]["source"])
         durable_unlink(self.paths.pending)
+        if pending.get("clear_recovered_draft", False):
+            durable_unlink(self.paths.recovered_draft)
         warnings = self._sync_timer(pending["candidate"]["config"])
         return {"pending": False, "confirmed": True, "warnings": warnings}
 
@@ -373,7 +396,9 @@ class Controller:
         warnings = self._sync_timer(before["config"])
         return {"pending": False, "rolled_back": True, "warnings": warnings}
 
-    def _transaction(self, candidate: dict, *, safe: bool, timeout: int = 90) -> dict:
+    def _transaction(
+        self, candidate: dict, *, safe: bool, timeout: int = 90, clear_recovered_draft: bool = False
+    ) -> dict:
         self._assert_no_pending()
         if not 30 <= timeout <= 600:
             raise OperationError("Rollback timeout must be between 30 and 600 seconds")
@@ -387,6 +412,7 @@ class Controller:
             "deadline": time.time() + timeout,
             "before": before,
             "candidate": candidate,
+            "clear_recovered_draft": clear_recovered_draft,
         }
         _write_pending(self.paths.pending, pending)
         try:
@@ -413,7 +439,12 @@ class Controller:
         }
 
     def apply(
-        self, config: dict | None = None, safe: bool = True, force: bool = False, timeout: int = 90
+        self,
+        config: dict | None = None,
+        safe: bool = True,
+        force: bool = False,
+        timeout: int = 90,
+        clear_recovered_draft: bool = True,
     ) -> dict:
         self._require_root()
         with operation_lock(self.paths.state_dir):
@@ -436,7 +467,12 @@ class Controller:
                     "destinations": resolve_destinations(candidate, addresses),
                     "applied_at": utc_now(),
                 }
-                return self._transaction(snapshot, safe=safe, timeout=timeout)
+                return self._transaction(
+                    snapshot,
+                    safe=safe,
+                    timeout=timeout,
+                    clear_recovered_draft=clear_recovered_draft,
+                )
             except (ValueError, OSError, RuntimeError) as exc:
                 self._event("apply_failed", detail=str(exc)[:2000])
                 raise
@@ -475,12 +511,12 @@ class Controller:
             except ValueError:
                 candidate = default_config()
         candidate["enabled"] = False
-        return self.apply(candidate, safe=False)
+        return self.apply(candidate, safe=False, clear_recovered_draft=False)
 
     def enable(self, safe: bool = True) -> dict:
         candidate = self.config()
         candidate["enabled"] = True
-        return self.apply(candidate, safe=safe)
+        return self.apply(candidate, safe=safe, clear_recovered_draft=False)
 
     def update(self, dry_run: bool = False, force: bool = False) -> dict:
         if dry_run:

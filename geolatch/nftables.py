@@ -71,6 +71,35 @@ def _validate_table(source: str) -> str:
     return source.strip() + "\n"
 
 
+def _text_chain_comments(source: str) -> dict[str, str]:
+    """Read declaration comments from an already validated owned table.
+
+    Older nft releases print comments in text but omit them from JSON. Match
+    only a chain declaration at table depth, then its first declaration field;
+    a comment on a packet rule or inside a quoted string is never ownership or
+    revision evidence. GeoLatch's chain comments contain plain ASCII strings.
+    """
+    tokens = re.findall(r'"(?:[^"\\]|\\.)*"|\#[^\n]*|[{};]|[^\s{};"#]+', source)
+    tokens = [token for token in tokens if not token.startswith("#")]
+    depth = 0
+    comments = {}
+    for index, token in enumerate(tokens):
+        if token == "chain" and depth == 1 and index + 4 < len(tokens):
+            name, opening, field, value = tokens[index + 1 : index + 5]
+            if opening == "{" and field == "comment" and value.startswith('"'):
+                try:
+                    comment = json.loads(value)
+                except ValueError:
+                    continue
+                if isinstance(comment, str):
+                    comments[name] = comment
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+    return comments
+
+
 class Nftables:
     """Execute bounded nft commands without a shell or localized diagnostics."""
 
@@ -144,12 +173,35 @@ class Nftables:
         if len(tables) != 1 or not isinstance(tables[0], dict):
             raise NftError("nftables did not return the requested table")
         table = tables[0]
-        if (
-            table.get("family") != FAMILY
-            or table.get("name") != TABLE
-            or table.get("comment") != OWNER
-        ):
+        if table.get("family") != FAMILY or table.get("name") != TABLE:
+            raise NftError("nftables did not return the requested table")
+        if table.get("comment") not in (None, OWNER):
             raise NftError("Refusing to modify inet geolatch: the table is not owned by GeoLatch")
+        legacy_chains = [
+            entry["chain"]
+            for entry in result["nftables"]
+            if isinstance(entry, dict)
+            and isinstance(entry.get("chain"), dict)
+            and entry["chain"].get("name") == "prerouting"
+            and entry["chain"].get("comment") is None
+        ]
+        if table.get("comment") is None or legacy_chains:
+            # nft 1.0.x can retain table/chain comments in the kernel while
+            # omitting them from JSON. Require positive textual verification;
+            # absence from JSON must never become permission to adopt a table.
+            source = self._run(["list", "table", FAMILY, TABLE])
+            try:
+                source = _validate_table(source)
+            except NftError as exc:
+                raise NftError(
+                    "Refusing to modify inet geolatch: the table is not owned by GeoLatch "
+                    "(textual ownership verification failed)"
+                ) from exc
+            table["comment"] = OWNER
+            comments = _text_chain_comments(source)
+            for chain in legacy_chains:
+                if chain["name"] in comments:
+                    chain["comment"] = comments[chain["name"]]
         return result
 
     def snapshot(self) -> str | None:

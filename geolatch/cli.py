@@ -173,10 +173,11 @@ def _parser(t: Translator) -> Parser:
     internal.add_argument("--payload", required=True, type=Path)
     guard = commands.add_parser("_watchdog", add_help=False, help=argparse.SUPPRESS)
     guard.add_argument("token")
+    commands.add_parser("_repair_pending", add_help=False, help=argparse.SUPPRESS)
     commands._choices_actions[:] = [
         action
         for action in commands._choices_actions
-        if action.dest not in ("_operate", "_watchdog")
+        if action.dest not in ("_operate", "_watchdog", "_repair_pending")
     ]
     return parser
 
@@ -326,6 +327,8 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(payload, dict):
                 raise OperationError("Operation payload must be an object")
             result = controller.operate(args.operation, payload)
+        elif command == "_repair_pending":
+            result = controller.repair_pending()
         elif command == "_watchdog":
             controller._require_root()
             from .rollback import watchdog

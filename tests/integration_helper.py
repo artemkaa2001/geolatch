@@ -321,10 +321,13 @@ def allowlist(peer: NetworkNamespace, servers: EchoServers) -> None:
         "nft",
         "--file",
         "-",
-        source="table inet foreign { chain incoming { type filter hook input priority 0; policy accept; "
-        f"ip saddr 198.51.100.2 tcp dport {servers.ports['tcp4']} drop; "
-        f"ip6 saddr 2001:db8::2 tcp dport {servers.ports['tcp6']} drop; "
-        "} }\n",
+        source="table inet foreign {\n"
+        "    chain incoming {\n"
+        "        type filter hook input priority 0; policy accept;\n"
+        f"        ip saddr 198.51.100.2 tcp dport {servers.ports['tcp4']} drop\n"
+        f"        ip6 saddr 2001:db8::2 tcp dport {servers.ports['tcp6']} drop\n"
+        "    }\n"
+        "}\n",
     )
     before = foreign_table()
     install(cfg)
@@ -342,7 +345,12 @@ def transactions(peer: NetworkNamespace, servers: EchoServers) -> None:
         "nft",
         "--file",
         "-",
-        source="table inet foreign { set retained { type ipv4_addr; elements = { 192.0.2.1 }; } }\n",
+        source="table inet foreign {\n"
+        "    set retained {\n"
+        "        type ipv4_addr\n"
+        "        elements = { 192.0.2.1 }\n"
+        "    }\n"
+        "}\n",
     )
     foreign = foreign_table()
     nft = install()
@@ -447,14 +455,16 @@ def dnat(peer: NetworkNamespace, servers: EchoServers) -> None:
         try:
             ports = json.loads(remote.stdout.readline())["ports"]
             lines = [
-                "table inet container_nat { chain published { type nat hook prerouting priority -100; policy accept;"
+                "table inet container_nat {",
+                "    chain published {",
+                "        type nat hook prerouting priority -100; policy accept;",
             ]
             for protocol in ("tcp", "udp"):
                 lines += [
                     f"iifname server0 ip daddr 198.51.100.10 {protocol} dport {ports[f'{protocol}4']} dnat ip to 172.18.0.2",
                     f"iifname server0 ip6 daddr 2001:db8::10 {protocol} dport {ports[f'{protocol}6']} dnat ip6 to fd00:18::2",
                 ]
-            lines += ["} }"]
+            lines += ["    }", "}"]
             command("nft", "--file", "-", source="\n".join(lines) + "\n")
             for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
                 for protocol in ("tcp", "udp"):
@@ -490,8 +500,21 @@ def scope(peer: NetworkNamespace, servers: EchoServers) -> None:
         link(alternate, "tunnel0", "vpn0", "192.0.2.1/24", "fd00:19::1/64")
         alternate.run("ip", "address", "add", "198.51.100.2/32", "dev", "vpn0")
         alternate.run("ip", "-6", "address", "add", "2001:db8::2/128", "dev", "vpn0", "nodad")
-        alternate.run("ip", "route", "add", "198.51.100.10/32", "via", "192.0.2.1", "onlink")
-        alternate.run("ip", "-6", "route", "add", "2001:db8::10/128", "via", "fd00:19::1", "onlink")
+        alternate.run(
+            "ip", "route", "add", "198.51.100.10/32", "via", "192.0.2.1", "dev", "vpn0", "onlink"
+        )
+        alternate.run(
+            "ip",
+            "-6",
+            "route",
+            "add",
+            "2001:db8::10/128",
+            "via",
+            "fd00:19::1",
+            "dev",
+            "vpn0",
+            "onlink",
+        )
         command("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
         command("sysctl", "-w", "net.ipv4.conf.tunnel0.rp_filter=0")
         nft = install()

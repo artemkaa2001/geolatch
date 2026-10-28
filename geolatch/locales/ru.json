@@ -294,5 +294,8 @@
   "field.geoip_health": "База GeoIP",
   "value.cached": "Сохранённые сведения",
   "value.invalid": "Повреждена",
-  "value.unconfigured": "Не настроена"
+  "value.unconfigured": "Не настроена",
+  "field.recovered": "Восстановлено",
+  "field.draft_path": "Файл восстановленного черновика",
+  "field.clear_recovered_draft": "Удалить восстановленный черновик после подтверждения"
 }

@@ -265,5 +265,6 @@
   "label.geoip_health": "База GeoIP",
   "value.cached": "Сохранённые сведения",
   "value.invalid": "Повреждена",
-  "value.unconfigured": "Не настроена"
+  "value.unconfigured": "Не настроена",
+  "recovery.draft_restored": "Настройки незавершённого применения восстановлены в черновик. Проверьте и примените их снова."
 }

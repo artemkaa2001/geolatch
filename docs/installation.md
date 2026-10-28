@@ -4,7 +4,7 @@ The supported automatic install path is a checkout plus `sudo ./install.sh`. Ubu
 
 The installer validates Linux, distribution, architecture, root rights, systemd and Python 3.10+. It builds a new release before switching `/opt/geolatch/current` atomically, and uses a root-owned `/usr/local/bin/geolatch` launcher with Python isolated mode. The installed application is not imported from the caller's current working directory or `PYTHONPATH`.
 
-An installation lock prevents concurrent installs/removals. The previous release remains available if dependency installation fails. Old successful releases are kept for inspection; they can consume disk space and are removed by the uninstaller. Config, cache and confirmed state remain outside the release tree. An unconfirmed firewall apply must be confirmed or rolled back before a software update.
+An installation lock prevents concurrent installs/removals. The previous release remains available if dependency installation fails. Old successful releases are kept for inspection; they can consume disk space and are removed by the uninstaller. Config, cache and confirmed state remain outside the release tree. A normal software update requires an unconfirmed apply to be resolved first. Explicit `--repair` can recover an interrupted apply with the newly staged backend, saving its candidate as `recovered-draft.yaml` before ownership-checked rollback; see [troubleshooting](troubleshooting.md).
 
 ```sh
 git pull --ff-only

@@ -265,5 +265,6 @@
   "label.geoip_health": "GeoIP database",
   "value.cached": "Cached status",
   "value.invalid": "Invalid",
-  "value.unconfigured": "Not configured"
+  "value.unconfigured": "Not configured",
+  "recovery.draft_restored": "Your interrupted configuration has been restored as a draft. Review and apply it again."
 }

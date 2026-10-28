@@ -23,5 +23,9 @@ class Paths:
         return self.state_dir / "pending.json"
 
     @property
+    def recovered_draft(self) -> Path:
+        return self.config_file.parent / "recovered-draft.yaml"
+
+    @property
     def events(self) -> Path:
         return self.state_dir / "events.jsonl"

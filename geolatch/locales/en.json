@@ -290,5 +290,8 @@
   "field.geoip_health": "GeoIP database",
   "value.cached": "Cached status",
   "value.invalid": "Invalid",
-  "value.unconfigured": "Not configured"
+  "value.unconfigured": "Not configured",
+  "field.recovered": "Recovered",
+  "field.draft_path": "Recovered draft file",
+  "field.clear_recovered_draft": "Clear recovered draft after confirmation"
 }

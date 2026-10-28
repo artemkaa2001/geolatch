@@ -11,6 +11,7 @@ geolatch_release=
 geolatch_old_current=
 geolatch_switched=0
 geolatch_install_complete=0
+geolatch_repair_pending=0
 
 message() {
     if [[ $geolatch_lang == ru ]]; then printf '%s\n' "$2"; else printf '%s\n' "$1"; fi
@@ -22,8 +23,8 @@ usage() {
 cleanup() {
     local result=$?
     if (( result != 0 )); then
-        message "Installation failed (exit $result). Read the error above; no firewall rules were changed by this installer." \
-            "Установка прервана (код $result). Причина указана выше; установщик не менял правила firewall." >&2
+        message "Installation failed (exit $result). Read the error above. Retain configuration and recovery files." \
+            "Установка прервана (код $result). Причина указана выше. Сохраните конфигурацию и файлы восстановления." >&2
         if (( geolatch_switched && !geolatch_install_complete )); then
             if [[ -n $geolatch_old_current ]]; then
                 ln -s -- "$geolatch_old_current" /opt/geolatch/current.rollback
@@ -95,9 +96,16 @@ if [[ -e /opt/geolatch/current || -L /opt/geolatch/current ]]; then
     fi
 fi
 
-[[ ! -e /var/lib/geolatch/pending.json ]] || fail \
-    'An apply is awaiting confirmation. Confirm it or roll back before changing the installed program.' \
-    'Ожидается подтверждение правил. Подтвердите применение или выполните откат до обновления программы.'
+if [[ -e /var/lib/geolatch/pending.json ]]; then
+    if [[ $geolatch_action == repair ]]; then
+        geolatch_repair_pending=1
+        message 'Repair will preserve your draft and use the new backend to restore the previous firewall before reopening GeoLatch.' \
+            'Восстановление сохранит черновик и использует новую версию для отката незавершённых правил перед открытием GeoLatch.'
+    else
+        fail 'An apply is awaiting confirmation. Confirm or roll back first; use --repair only to recover a broken installation.' \
+            'Ожидается подтверждение правил. Подтвердите или откатите их; для восстановления неисправной установки используйте --repair.'
+    fi
+fi
 message 'Installing GeoLatch dependencies…' 'Установка зависимостей GeoLatch…'
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip nftables iproute2 ca-certificates sudo
@@ -122,6 +130,10 @@ python3 -m venv "$geolatch_release/venv"
 "$geolatch_release/venv/bin/python" -I -c 'import textual, yaml; from geolatch.i18n import Translator; assert Translator("en")'
 install -o root -g root -m 0755 "$geolatch_source/uninstall.sh" "$geolatch_release/uninstall.sh"
 
+if (( geolatch_repair_pending )); then
+    "$geolatch_release/venv/bin/python" -I -m geolatch --json _repair_pending
+fi
+
 ln -s -- "$geolatch_release" /opt/geolatch/current.new
 mv -Tf -- /opt/geolatch/current.new /opt/geolatch/current
 geolatch_switched=1
@@ -141,8 +153,13 @@ systemctl enable geolatch-restore.service
 /usr/local/bin/geolatch version
 geolatch_install_complete=1
 exec 9>&-
-message 'GeoLatch is installed. Configuration and firewall rules were preserved.' \
-    'GeoLatch установлен. Конфигурация и действующие правила сохранены.'
+if (( geolatch_repair_pending )); then
+    message 'GeoLatch repaired. Previous firewall restored; your recovered draft will reopen for review and safe apply.' \
+        'GeoLatch восстановлен. Прежние правила восстановлены; сохранённый черновик откроется для проверки и безопасного применения.'
+else
+    message 'GeoLatch is installed. Configuration and firewall rules were preserved.' \
+        'GeoLatch установлен. Конфигурация и действующие правила сохранены.'
+fi
 if (( geolatch_no_setup )); then
     message 'Automation mode: open geolatch in a terminal, or review and apply an explicit configuration.' \
         'Автоматический режим: откройте geolatch в терминале или проверьте и примените явную конфигурацию.'

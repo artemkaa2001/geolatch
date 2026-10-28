@@ -20,6 +20,8 @@ The installer installs distribution dependencies, creates an isolated Python env
 
 If already installed, the installer offers Open, Upgrade, Repair or Cancel. Updates preserve `/etc/geolatch/config.yaml`, local data and existing rules. For unattended software installation use `sudo ./install.sh --no-setup`; an existing installation additionally requires `--upgrade` or `--repair`. That explicit automation mode does not configure a firewall for you.
 
+For an interrupted apply caused by an older installation, use current source and `sudo bash install.sh --repair`. Repair preserves the desired policy as a recovered draft, restores the preceding rules with the fixed backend, and reopens the draft for review. See [recovery instructions](docs/troubleshooting.md).
+
 ## First setup and daily use
 
 The wizard discovers actual interfaces and IPv4/IPv6 addresses, lets you select destinations and countries, choose an upstream provider, add trusted administrative CIDRs, and review the result. Docker bridges, loopback and tunnel interfaces require particular care. Confirm that the selected destination is the address seen **before DNAT**, especially on a VPS behind a provider NAT.
