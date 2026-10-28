@@ -1,0 +1,9 @@
+include LICENSE README.md README.ru.md CHANGELOG.md SECURITY.md CONTRIBUTING.md
+include install.sh uninstall.sh
+recursive-include systemd *.service *.timer
+recursive-include examples *.yaml
+recursive-include docs *.md
+recursive-include benchmarks *.py *.md
+recursive-include geolatch *.json *.tcss *.txt
+recursive-include tests *.py
+recursive-include .github *.yml

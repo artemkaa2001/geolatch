@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily GeoLatch GeoIP refresh
+Documentation=https://github.com/artemkaa2001/geolatch
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+Unit=geolatch-update.service
+
+[Install]
+WantedBy=timers.target

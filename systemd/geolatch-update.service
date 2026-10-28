@@ -1,0 +1,19 @@
+[Unit]
+Description=Validate and update GeoLatch country networks
+Documentation=https://github.com/artemkaa2001/geolatch
+After=network-online.target geolatch-restore.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/geolatch update --unattended
+TimeoutStartSec=1800
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/geolatch /var/lib/geolatch /var/cache/geolatch /var/log/geolatch
+ReadWritePaths=/etc/systemd/system/geolatch-update.timer.d
+CapabilityBoundingSet=CAP_NET_ADMIN
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6

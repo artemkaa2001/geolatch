@@ -1,0 +1,19 @@
+Screen { background: $surface; color: $text; }
+#brand { height: 3; padding: 0 2; background: $panel; color: $accent; }
+#hint { dock: bottom; height: 2; padding: 0 2; background: $panel; color: $text-muted; }
+#body { padding: 1 2; height: 1fr; }
+.title { text-style: bold; color: $accent; margin-bottom: 1; height: auto; }
+.explanation { height: auto; margin-bottom: 1; color: $text-muted; }
+.summary { height: auto; margin-bottom: 1; padding: 1; border: round $primary; }
+OptionList { height: auto; max-height: 1fr; min-height: 3; border: round $primary; }
+SelectionList { height: 1fr; min-height: 5; border: round $primary; }
+Input { margin-bottom: 1; }
+.actions { height: auto; min-height: 3; margin-top: 1; }
+.actions Button { margin-right: 1; }
+.counter { height: 1; color: $accent; }
+.error-text { color: $error; height: auto; }
+#small-terminal { display: none; padding: 1; color: $warning; height: auto; }
+Dialog { align: center middle; background: $background 80%; }
+#dialog { width: 70; max-width: 95%; height: auto; max-height: 90%; padding: 1 2; border: round $accent; background: $surface; }
+#dialog .actions { align-horizontal: right; }
+LoadingIndicator { height: 3; }

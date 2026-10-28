@@ -1,0 +1,34 @@
+# Documentation addresses: replace interfaces and destination IPs before applying.
+version: 1
+language: en
+enabled: true
+source: ipverse-geo
+updates:
+  enabled: true
+  interval: daily
+network:
+  ipv4: true
+  ipv6: false
+  interfaces:
+    - eth0
+firewall:
+  action: drop
+  preserve_established: true
+allowlist:
+  ipv4:
+    - 198.51.100.50/32
+  ipv6: []
+policies:
+  - name: primary
+    enabled: true
+    destinations:
+      - 203.0.113.10
+    block_countries:
+      - IR
+      - PK
+  - name: secondary
+    enabled: true
+    destinations:
+      - 203.0.113.20
+    block_countries:
+      - CN

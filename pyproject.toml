@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geolatch"
+version = "0.1.0"
+description = "Lightweight Linux GeoIP firewall manager with per-IP country blocking, automatic updates, bilingual terminal UI and safe rollback."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT AND LGPL-2.1-or-later"
+license-files = ["LICENSE", "geolatch/locales/COUNTRIES-LICENSE.txt"]
+authors = [{name = "@artemkaa_2001"}]
+keywords = ["linux", "nftables", "geoip", "firewall", "terminal"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: System :: Networking :: Firewalls",
+]
+dependencies = ["PyYAML>=6.0,<7", "textual>=8.2,<9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.9,<1", "build>=1.2,<2"]
+
+[project.scripts]
+geolatch = "geolatch.cli:main"
+
+[project.urls]
+Repository = "https://github.com/artemkaa2001/geolatch"
+Issues = "https://github.com/artemkaa2001/geolatch/issues"
+Developer = "https://t.me/artemkaa_2001"
+
+[tool.setuptools.packages.find]
+include = ["geolatch*"]
+
+[tool.setuptools.package-data]
+geolatch = ["locales/*.json", "locales/*.txt", "tui/*.tcss", "tui/locales/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: isolated kernel/network namespace tests; require Linux capabilities and nftables"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["geolatch"]

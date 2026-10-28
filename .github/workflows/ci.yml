@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install '.[dev]'
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -m 'not integration'
+      - run: python -m build
+      - name: Verify installed wheel and packaged translations
+        run: |
+          python -m venv /tmp/geolatch-wheel
+          /tmp/geolatch-wheel/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/geolatch-wheel/bin/geolatch version
+          /tmp/geolatch-wheel/bin/geolatch --lang ru countries --json >/dev/null
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck install.sh uninstall.sh
+      - run: bash -n install.sh uninstall.sh
+  integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y nftables iproute2 util-linux procps
+      - run: python -m venv .venv && .venv/bin/pip install '.[dev]'
+      - name: Isolated network namespace tests
+        run: sudo env GEOLATCH_REQUIRE_INTEGRATION=1 "$PWD/.venv/bin/python" -m pytest tests/test_integration.py -m integration -v
