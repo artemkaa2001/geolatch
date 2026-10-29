@@ -297,5 +297,13 @@
   "value.unconfigured": "Не настроена",
   "field.recovered": "Восстановлено",
   "field.draft_path": "Файл восстановленного черновика",
-  "field.clear_recovered_draft": "Удалить восстановленный черновик после подтверждения"
+  "field.clear_recovered_draft": "Удалить восстановленный черновик после подтверждения",
+  "field.traffic_stats": "Статистика отброшенного трафика",
+  "field.unique_ips": "Уникальные отброшенные IP-адреса источника",
+  "field.unique_limit_reached": "Число уникальных IP — нижняя граница",
+  "field.tracking_available": "Учёт уникальных IP доступен",
+  "field.dropped_packets": "Отброшено пакетов",
+  "field.dropped_bytes": "Отброшено байт",
+  "field.counter_error": "Доступность счётчиков",
+  "value.tracking_not_enabled": "Примените обновлённые правила, чтобы включить учёт уникальных IP"
 }

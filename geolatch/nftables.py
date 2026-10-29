@@ -13,9 +13,18 @@ import re
 import subprocess
 from typing import Any
 
+from .statistics import (
+    TRACKING_SETS,
+    StatisticsError,
+    aggregate_stats,
+    tracking_definitions,
+    tracking_families,
+)
+
 TABLE = "geolatch"
 FAMILY = "inet"
 OWNER = "GeoLatch managed table v1"
+_UNREAD = object()
 
 
 class NftError(RuntimeError):
@@ -140,7 +149,7 @@ class Nftables:
             raise NftError("nftables returned an unexpected JSON schema")
         return result
 
-    def inspect(self) -> dict[str, Any] | None:
+    def inspect(self, *, terse: bool = False) -> dict[str, Any] | None:
         """Return the actual owned table, None only after a successful absence check.
 
         Listing tables first avoids confusing permission denied, missing kernel
@@ -164,7 +173,10 @@ class Nftables:
                 found = True
         if not found:
             return None
-        result = self._json(["list", "table", FAMILY, TABLE])
+        # Periodic statistics need the rules and set definitions, not hundreds
+        # of thousands of GeoIP prefixes. --terse suppresses only elements.
+        options = ["--terse"] if terse else []
+        result = self._json([*options, "list", "table", FAMILY, TABLE])
         tables = [
             entry["table"]
             for entry in result["nftables"]
@@ -189,7 +201,7 @@ class Nftables:
             # nft 1.0.x can retain table/chain comments in the kernel while
             # omitting them from JSON. Require positive textual verification;
             # absence from JSON must never become permission to adopt a table.
-            source = self._run(["list", "table", FAMILY, TABLE])
+            source = self._run([*options, "list", "table", FAMILY, TABLE])
             try:
                 source = _validate_table(source)
             except NftError as exc:
@@ -203,6 +215,101 @@ class Nftables:
                 if chain["name"] in comments:
                     chain["comment"] = comments[chain["name"]]
         return result
+
+    @staticmethod
+    def _statistics_epoch(table: dict[str, Any]) -> tuple:
+        """Identify a table instance, including replacement by identical rules.
+
+        A revision alone is insufficient: applying the same configuration
+        replaces the table and resets counters. Kernel table handles identify
+        the instance even when its revision is unchanged.
+        """
+        # Validate every entry before touching its fields; malformed final
+        # reads must become an unavailable counter, never an uncaught TypeError.
+        definitions = tracking_definitions(table)
+        tables = [entry["table"] for entry in table["nftables"] if "table" in entry]
+        handle = tables[0].get("handle") if len(tables) == 1 else None
+        if type(handle) is not int or handle < 0:
+            raise NftError("Cannot identify the actual nftables statistics epoch")
+        chains = [
+            entry["chain"]
+            for entry in table["nftables"]
+            if isinstance(entry.get("chain"), dict) and entry["chain"].get("name") == "prerouting"
+        ]
+        if len(chains) != 1:
+            raise NftError("Cannot identify the GeoLatch statistics chain")
+        return (
+            handle,
+            chains[0].get("handle"),
+            chains[0].get("comment"),
+            tuple(
+                (
+                    family,
+                    json.dumps(
+                        {k: v for k, v in definition.items() if k != "elem"}, sort_keys=True
+                    ),
+                )
+                for family, definition in sorted(definitions.items())
+            ),
+        )
+
+    def traffic_stats(self, table: Any = _UNREAD) -> dict[str, Any]:
+        """Return actual unique-source and DROP totals, never source addresses.
+
+        An already inspected full table (or positively verified absence) avoids
+        another kernel read. The polling path reads a terse table and only the
+        two bounded source sets. A final instance check rejects replacements
+        during those reads, including a replacement with the same revision.
+        Errors remain errors; permission denial must never appear as zero IPs.
+        """
+        try:
+            if table is not _UNREAD:
+                return aggregate_stats(table)
+            before = self.inspect(terse=True)
+            if before is None:
+                return aggregate_stats(None)
+            families = tracking_families(before)
+            definitions = tracking_definitions(before)
+            if not families or not families <= definitions.keys():
+                return aggregate_stats(before)
+            epoch = self._statistics_epoch(before)
+            sources = []
+            for family in sorted(families):
+                result = self._json(["list", "set", FAMILY, TABLE, TRACKING_SETS[family]])
+                sets = [
+                    entry["set"]
+                    for entry in result["nftables"]
+                    if isinstance(entry, dict) and "set" in entry
+                ]
+                if len(sets) != 1 or not isinstance(sets[0], dict):
+                    raise NftError("nftables did not return the requested statistics set")
+                definition = sets[0]
+                if (
+                    definition.get("name") != TRACKING_SETS[family]
+                    or definition.get("family") != FAMILY
+                    or definition.get("table") != TABLE
+                    or {k: v for k, v in definition.items() if k != "elem"}
+                    != {k: v for k, v in definitions[family].items() if k != "elem"}
+                ):
+                    raise NftError("The actual nftables statistics set changed during the read")
+                sources.append({"set": definition})
+            after = self.inspect(terse=True)
+            if after is None or self._statistics_epoch(after) != epoch:
+                raise NftError("The actual nftables statistics epoch changed during the read")
+            # Counter values come from the final table read. GeoIP elements
+            # remain absent, and source addresses never leave aggregate_stats.
+            result = {
+                "nftables": [
+                    entry
+                    for entry in after["nftables"]
+                    if not isinstance(entry.get("set"), dict)
+                    or entry["set"].get("name") not in TRACKING_SETS.values()
+                ]
+                + sources
+            }
+            return aggregate_stats(result)
+        except StatisticsError as exc:
+            raise NftError(str(exc)) from exc
 
     def snapshot(self) -> str | None:
         """Read a restorable snapshot of the owned table, including counters."""

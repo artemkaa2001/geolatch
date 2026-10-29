@@ -28,7 +28,7 @@ from textual.widgets import Button, Input, LoadingIndicator, OptionList, Selecti
 from textual.widgets.option_list import Option
 
 from geolatch.config import validate_config
-from geolatch.i18n import countries, country_name
+from geolatch.i18n import Translator, countries, country_name
 from geolatch.metadata import DEVELOPER, NAME, VERSION
 
 from .translations import translate
@@ -269,7 +269,7 @@ class MainScreen(MenuScreen):
         elif action == "update":
             self.geo.push_screen(UpdateScreen())
         elif action == "stats":
-            self.geo.push_screen(DataScreen("stats.title", "status"))
+            self.geo.push_screen(StatisticsScreen())
         elif action == "doctor":
             self.geo.push_screen(DataScreen("doctor.title", "doctor"))
         elif action == "review":
@@ -1002,6 +1002,35 @@ class UpdateScreen(MenuScreen):
             self.geo.push_screen(OperationScreen("update", {"dry_run": action == "check"}))
 
 
+class StatisticsScreen(BaseScreen):
+    """A compact view of measured drops, without exposing source addresses."""
+
+    def compose_body(self) -> ComposeResult:
+        yield self.title_widget("stats.title")
+        yield Static(
+            self.geo.traffic_summary(), id="traffic-summary", classes="summary", markup=False
+        )
+        yield self.text_widget("stats.period")
+        yield self.text_widget("stats.refresh_period")
+        yield Button(self.tr("stats.refresh"), id="refresh", variant="primary")
+        yield Button(self.tr("stats.details"), id="details")
+        yield Button(self.tr("back"), id="back")
+
+    def on_mount(self) -> None:
+        self.geo.refresh_traffic_stats()
+
+    def update_stats(self) -> None:
+        self.query_one("#traffic-summary", Static).update(self.geo.traffic_summary())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "refresh":
+            self.geo.refresh_traffic_stats()
+        elif event.button.id == "details":
+            self.geo.push_screen(DataScreen("stats.title", "status"))
+        elif event.button.id == "back":
+            self.geo.pop_screen()
+
+
 class DataScreen(BaseScreen):
     def __init__(self, title: str, operation: str) -> None:
         super().__init__()
@@ -1024,6 +1053,7 @@ class DataScreen(BaseScreen):
             self.query_one("#data", Static).update(self.geo.format_data(result))
             if self.operation_name == "status":
                 self.geo.last_status = result
+                self.geo.last_traffic = result.get("traffic_stats", {})
         except Exception as exc:
             self.query_one("#data", Static).update(self.tr("error.detail", detail=str(exc)))
 
@@ -1085,6 +1115,8 @@ class GeoLatchApp(App[None]):
         self.active_policy = 0
         self.address_rows: list[dict[str, Any]] = []
         self.last_status: dict[str, Any] = {}
+        self.last_traffic: dict[str, Any] = {}
+        self._traffic_loading = False
         self._exit_pending = False
 
     @property
@@ -1129,7 +1161,35 @@ class GeoLatchApp(App[None]):
             source=self.last_status.get("source", self.draft["source"]),
             geoip=self.format_data(self.last_status.get("geoip_health", "unknown")),
             timer=self.format_data(self.last_status.get("timer", "unknown")),
+            dropped=self.dropped_ips_text(),
         )
+
+    def dropped_ips_text(self) -> str:
+        value = self.last_traffic.get("unique_ips")
+        if type(value) is not int or value < 0:
+            return self.tr("stats.unavailable")
+        count = Translator(self.language).number(value)
+        if self.last_traffic.get("unique_limit_reached"):
+            count = "≥ " + count
+        return self.tr("stats.ips", count=count)
+
+    def traffic_summary(self) -> str:
+        lines = [self.dropped_ips_text(), self.tr("stats.unique")]
+        for field in ("dropped_packets", "dropped_bytes"):
+            value = self.last_traffic.get(field)
+            count = (
+                Translator(self.language).number(value)
+                if type(value) is int and value >= 0
+                else self.tr("stats.no_data")
+            )
+            lines.append(self.tr(f"stats.{field}", count=count))
+        if self.last_traffic.get("unique_limit_reached"):
+            lines.append(self.tr("stats.limit"))
+        if self.last_traffic.get("counter_error") == "tracking_not_enabled":
+            lines.append(self.tr("stats.enable"))
+        elif self.last_traffic.get("unique_ips") is None:
+            lines.append(self.tr("stats.read_error"))
+        return "\n".join(lines)
 
     def brand(self) -> str:
         return f"{NAME} v{VERSION}  ·  {self.tr('brand.subtitle')}\n{self.tr('brand.developer', developer=DEVELOPER)}"
@@ -1195,6 +1255,7 @@ class GeoLatchApp(App[None]):
         ):
             self.notify(self.tr("recovery.draft_restored"), timeout=12)
         self.load_environment()
+        self.set_interval(10.0, self.refresh_traffic_stats)
 
     @work(exclusive=True)
     async def load_environment(self) -> None:
@@ -1206,8 +1267,35 @@ class GeoLatchApp(App[None]):
             self.last_status = await self.call_controller(self.controller.status)
         except Exception:
             self.last_status = {"active": None}
+        self.last_traffic = self.last_status.get("traffic_stats", {})
         if isinstance(self.screen, MainScreen):
             self.screen.update_status()
+
+    def refresh_traffic_stats(self) -> None:
+        # Poll only visible statistics. Never invoke the privileged operation
+        # helper or rebuild the menu: keyboard focus must stay where it was.
+        if (
+            self._traffic_loading
+            or not isinstance(self.screen, (MainScreen, StatisticsScreen))
+            or not callable(getattr(self.controller, "traffic_stats", None))
+        ):
+            return
+        self._traffic_loading = True
+        self.load_traffic_stats()
+
+    @work(group="traffic")
+    async def load_traffic_stats(self) -> None:
+        try:
+            try:
+                self.last_traffic = await self.call_controller(self.controller.traffic_stats)
+            except Exception:
+                self.last_traffic = {}
+            if isinstance(self.screen, MainScreen):
+                self.screen.query_one("#status-summary", Static).update(self.status_summary())
+            elif isinstance(self.screen, StatisticsScreen):
+                self.screen.update_stats()
+        finally:
+            self._traffic_loading = False
 
     async def call_controller(self, method: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run blocking work in a bounded pool owned by the application."""

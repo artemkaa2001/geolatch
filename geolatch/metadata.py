@@ -1,7 +1,7 @@
 """Public project identity; keep attribution consistent across every interface."""
 
 NAME = "GeoLatch"
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 DEVELOPER = "@artemkaa_2001"
 TELEGRAM = "https://t.me/artemkaa_2001"
 REPOSITORY = "https://github.com/artemkaa2001/geolatch"

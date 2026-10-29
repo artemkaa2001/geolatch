@@ -81,6 +81,8 @@ def namespace_command() -> list[str]:
         "allowlist_and_foreign_firewall",
         "atomic_replace_disable_restore",
         "established_and_reply_direction",
+        "unique_dropped_sources",
+        "unique_source_capacity_still_drops",
         "dnat_before_forwarding",
         "interface_and_transit_scope",
     ],

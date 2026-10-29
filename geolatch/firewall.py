@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from .nftables import OWNER, NftError
+from .statistics import DROP_CHAINS, TRACKING_SETS, UNIQUE_IP_CAPACITY
 
 
 def _quote(value: str) -> str:
@@ -99,6 +100,28 @@ def generate_rules(
             lines.extend(_set(name, f"ipv{family}_addr", list(addresses_key[1])))
         rule_destinations[country, family] = destination_sets[addresses_key]
 
+    if rule_destinations:
+        lines.extend(["    chain geolatch_drop {", "        drop", "    }"])
+    for family in sorted({family for _, family in rule_destinations}):
+        protocol = "ip" if family == 4 else "ip6"
+        lines.extend(
+            [
+                f"    set {TRACKING_SETS[family]} {{",
+                f"        type ipv{family}_addr",
+                "        flags dynamic",
+                f"        size {UNIQUE_IP_CAPACITY}",
+                "    }",
+                f"    chain {DROP_CHAINS[family]} {{",
+                f"        update @{TRACKING_SETS[family]} {{ {protocol} saddr }} goto geolatch_drop",
+                # Successful insertion jumps directly to DROP. A full set/OOM
+                # breaks this rule and reaches the fallback DROP instead. Its
+                # counter records missed observations even below the capacity,
+                # so the UI never claims an exact count after allocation loss.
+                f"        counter drop comment {_quote(f'GeoLatch tracking failure family={family}')}",
+                "    }",
+            ]
+        )
+
     lines.extend(
         [
             "    chain prerouting {",
@@ -120,7 +143,7 @@ def generate_rules(
         lines.append(
             f"        iifname @ingress ct direction original {state}"
             f"{protocol} daddr @{destination_set} {protocol} saddr @geo_{country.lower()}_v{family} "
-            f"counter drop comment {_quote(f'GeoLatch country={country} family={family}')}"
+            f"counter jump {DROP_CHAINS[family]} comment {_quote(f'GeoLatch country={country} family={family}')}"
         )
     lines.extend(["    }", "}"])
     revision = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()

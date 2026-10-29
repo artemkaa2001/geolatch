@@ -293,5 +293,13 @@
   "value.unconfigured": "Not configured",
   "field.recovered": "Recovered",
   "field.draft_path": "Recovered draft file",
-  "field.clear_recovered_draft": "Clear recovered draft after confirmation"
+  "field.clear_recovered_draft": "Clear recovered draft after confirmation",
+  "field.traffic_stats": "Dropped traffic statistics",
+  "field.unique_ips": "Unique dropped source IPs",
+  "field.unique_limit_reached": "Unique IP count is a lower bound",
+  "field.tracking_available": "Unique IP tracking available",
+  "field.dropped_packets": "Dropped packets",
+  "field.dropped_bytes": "Dropped bytes",
+  "field.counter_error": "Counter availability",
+  "value.tracking_not_enabled": "Apply the updated rules to enable unique IP tracking"
 }

@@ -31,6 +31,7 @@ from .geoip import GeoIPStore
 from .networks import discover_addresses, resolve_destinations
 from .nftables import Nftables
 from .paths import Paths
+from .statistics import aggregate_stats
 from .utils import (
     atomic_write,
     durable_unlink,
@@ -51,6 +52,19 @@ class OperationError(RuntimeError):
 
 def _digest(data: Any) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def _unavailable_traffic_stats() -> dict:
+    # A failed read is unknown, never evidence that no source was blocked.
+    # Keep raw nft output out of the public summary (it can contain source IPs).
+    return {
+        "unique_ips": None,
+        "unique_limit_reached": False,
+        "tracking_available": False,
+        "dropped_packets": None,
+        "dropped_bytes": None,
+        "counter_error": "unavailable",
+    }
 
 
 def _write_snapshot(path: Path, data: dict) -> None:
@@ -598,6 +612,20 @@ class Controller:
                 result["rolled_back"] = True
             return result
 
+    def traffic_stats(self) -> dict:
+        """Read live traffic totals without privilege prompts or state writes."""
+        return self._traffic_stats()
+
+    def _traffic_stats(self, actual: Any = ...) -> dict:
+        try:
+            reader = getattr(self.nft, "traffic_stats", None)
+            if callable(reader):
+                return reader() if actual is ... else reader(table=actual)
+            # Injected backends can provide only the normal inspection boundary.
+            return aggregate_stats(self.nft.inspect() if actual is ... else actual)
+        except (ValueError, OSError, RuntimeError):
+            return _unavailable_traffic_stats()
+
     def status(self) -> dict:
         config = self.config()
         actual = None
@@ -608,6 +636,9 @@ class Controller:
         except (ValueError, OSError, RuntimeError) as exc:
             active = None
             query_error = str(exc)
+        traffic_stats = (
+            _unavailable_traffic_stats() if active is None else self._traffic_stats(actual)
+        )
         snapshot = None
         cached = {}
         snapshot_invalid = False
@@ -654,6 +685,7 @@ class Controller:
             "pending": self.paths.pending.exists(),
             "timer": timer,
             "counters": counters,
+            "traffic_stats": traffic_stats,
         }
 
     def _timer_state(self) -> str:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 — unique dropped-source IP statistics
+
+- Show the number of unique dropped source IPs in the main menu and a compact Statistics screen, refreshed every 10 seconds while either screen is open.
+- Deduplicate actual IPv4/IPv6 source addresses in bounded kernel sets; repeated packets, ports and destinations do not inflate the IP count. Packet and byte counters remain separately labelled.
+- Limit tracking to 65,536 addresses per family and show a lower bound when full or after any failed insertion. A fallback DROP continues blocking traffic and counts missed observations, preserving the warning after temporary allocation failures.
+- Explain unavailable legacy tracking and counter resets. Updating software preserves live rules; apply the current rules once to enable tracking on an older installation.
+- Add cardinality and isolated packet scenarios, including full-set blocking, and stabilize IPv6 neighbors on synthetic forwarding links. Actual kernel verification depends on the integration-test environment; see [verification status](docs/verification.md).
+
 ## 0.1.2 — wait for a running rollback during repair
 
 - Explicit repair waits up to 120 seconds for the existing operation lock, allowing a retrying old watchdog to finish its current attempt.

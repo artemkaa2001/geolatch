@@ -36,6 +36,14 @@ geolatch
 
 Changing firewall state requires root. The application uses `sudo` for privileged operations; no setuid Python or persistent root control daemon is installed. Reading kernel nftables state may also require privileges, so an ordinary user's status can report that live state is unavailable rather than inventing an active status.
 
+## Dropped IP statistics
+
+The main menu shows **Dropped: N IPs** and refreshes it every 10 seconds while open. Statistics shows the same unique-source count with separate dropped-packet and byte totals. The kernel counts each source address once, even when it sends repeated packets or targets different ports and protected destinations. IPv4 and IPv6 addresses count separately; an IP count is not a count of people or devices behind NAT.
+
+Tracking keeps up to 65,536 source addresses per IP family in kernel sets, without packet logs or an expiry time. At capacity, or after any failed tracking insertion, the display uses **≥ N** because the result is a lower bound; blocking continues. A failure counter preserves this warning even after a temporary allocation failure. Counts normally restart when rules are replaced, including a changed GeoIP update or reboot restore. Restoring a rules snapshot can restore its saved counts. See [firewall behavior](docs/firewall.md).
+
+Upgrading from 0.1.2 preserves live rules, which cannot provide historical unique-IP counts. Open **Review and apply draft**, apply and confirm once to enable tracking. Until then the UI reports that the unique count is unavailable. A failed or unprivileged kernel read also reports unavailable data rather than zero.
+
 ## Per-IP policies
 
 For example, block Iran and Pakistan on `203.0.113.10`, and China on `203.0.113.20`. In the wizard create a policy for each destination; leave other IPs out of all policies. Policies sharing a destination add their blocked country lists together. A policy with no countries contributes no blocks and does not override another policy.

@@ -52,7 +52,7 @@ def test_rules_limit_scope_and_share_country_sets(configuration, databases):
     assert rules.count("saddr @geo_ir_v4") == 1  # Union across overlapping policies.
     assert "203.0.113.10, 203.0.113.20" in rules
     assert "203.0.113.30" not in rules
-    drops = [line for line in rules.splitlines() if "counter drop" in line]
+    drops = [line for line in rules.splitlines() if "counter jump geolatch_drop" in line]
     assert len(drops) == 3
     assert all("iifname @ingress" in line and "daddr @dst_" in line for line in drops)
     assert all("ct direction original ct state new" in line for line in drops)
@@ -75,7 +75,9 @@ def test_established_and_ipv6_control_traffic_are_preserved(configuration, datab
     assert "ct state new" not in rules
     assert "ct direction reply return" in rules
     assert all(
-        "ct direction original" in line for line in rules.splitlines() if "counter drop" in line
+        "ct direction original" in line
+        for line in rules.splitlines()
+        if "counter jump geolatch_drop" in line
     )
 
 
@@ -86,7 +88,7 @@ def test_allowlist_only_returns_from_owned_chain(configuration, databases):
     assert "ip saddr @allow_v4 return" in rules
     assert "ip6 saddr @allow_v6 return" in rules
     assert "saddr @allow_v4 accept" not in rules
-    assert rules.index("saddr @allow_v4 return") < rules.index("counter drop")
+    assert rules.index("saddr @allow_v4 return") < rules.index("counter jump geolatch_drop")
 
 
 def test_disabled_policies_and_families_require_no_unused_database(configuration, databases):
@@ -96,7 +98,34 @@ def test_disabled_policies_and_families_require_no_unused_database(configuration
     assert "geo_ir_v4" in rules
     assert "geo_ir_v6" not in rules and "geo_cn_v4" not in rules
     configuration["enabled"] = False
-    assert "counter drop" not in generate_rules(configuration, {})
+    assert "counter jump geolatch_drop" not in generate_rules(configuration, {})
+
+
+def test_unique_source_sets_are_bounded_and_a_failed_update_still_reaches_drop(
+    configuration, databases
+):
+    from geolatch.statistics import UNIQUE_IP_CAPACITY
+
+    rules = generate_rules(configuration, databases)
+    for family, protocol in ((4, "ip"), (6, "ip6")):
+        assert (
+            f"    set dropped_sources_v{family} {{\n"
+            f"        type ipv{family}_addr\n"
+            "        flags dynamic\n"
+            f"        size {UNIQUE_IP_CAPACITY}\n"
+            "    }"
+        ) in rules
+        # Set insertion can return NFT_BREAK on a full set or allocation
+        # failure. The next rule drops and remembers the failed observation;
+        # successful tracking goes straight to the shared final DROP chain.
+        assert (
+            f"    chain geolatch_drop_v{family} {{\n"
+            f"        update @dropped_sources_v{family} {{ {protocol} saddr }} goto geolatch_drop\n"
+            f'        counter drop comment "GeoLatch tracking failure family={family}"\n'
+            "    }"
+        ) in rules
+    assert "    chain geolatch_drop {\n        drop\n    }" in rules
+    assert "timeout" not in rules
 
 
 def test_all_destinations_only_selects_public_local_chosen_interface(configuration, databases):
@@ -323,3 +352,201 @@ def test_corrupt_table_listing_is_not_evidence_of_absence(monkeypatch, entries):
     )
     with pytest.raises(NftError, match="invalid table listing"):
         Nftables().inspect()
+
+
+def statistics_table():
+    """CLI schema fixture; packet traversal is exercised in namespace tests."""
+    from geolatch.statistics import TRACKING_SETS
+
+    result = owned_table()
+    result["nftables"][0]["table"]["handle"] = 10
+    result["nftables"].append(
+        {
+            "chain": {
+                "family": "inet",
+                "table": "geolatch",
+                "name": "prerouting",
+                "handle": 20,
+                "comment": "geolatch-revision:" + "a" * 64,
+            }
+        }
+    )
+    for family, address in ((4, "198.51.100.1"), (6, "2001:db8:1::1")):
+        result["nftables"].extend(
+            [
+                {
+                    "set": {
+                        "family": "inet",
+                        "table": "geolatch",
+                        "name": TRACKING_SETS[family],
+                        "handle": 30 + family,
+                        "type": f"ipv{family}_addr",
+                        "flags": ["dynamic"],
+                        "size": 65536,
+                        "elem": [address],
+                    }
+                },
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "geolatch",
+                        "chain": "prerouting",
+                        "comment": f"GeoLatch country=IR family={family}",
+                        "expr": [
+                            {"counter": {"packets": family * 10, "bytes": family * 100}},
+                            {"jump": {"target": f"geolatch_drop_v{family}"}},
+                        ],
+                    }
+                },
+            ]
+        )
+    return result
+
+
+class StatisticsNft(Nftables):
+    def __init__(self):
+        super().__init__()
+        self.table = statistics_table()
+        self.calls = []
+        self.terse_reads = 0
+        self.replace = False
+        self.disappear = False
+        self.legacy = False
+        self.wrong_set = False
+        self.bad_set = False
+        self.omit_comments = False
+
+    def _run(self, arguments, source=None):
+        import copy
+
+        self.calls.append(arguments)
+        if arguments == ["--json", "list", "tables"]:
+            return json.dumps({"nftables": [{"table": {"family": "inet", "name": "geolatch"}}]})
+        if arguments == ["--json", "--terse", "list", "table", "inet", "geolatch"]:
+            self.terse_reads += 1
+            result = copy.deepcopy(self.table)
+            if self.disappear and self.terse_reads > 1:
+                raise NftError("No such file or directory")
+            if self.replace and self.terse_reads > 1:
+                result["nftables"][0]["table"]["handle"] += 1
+            for entry in result["nftables"]:
+                if "set" in entry:
+                    entry["set"].pop("elem", None)
+                if self.omit_comments:
+                    for kind in ("table", "chain"):
+                        if kind in entry:
+                            entry[kind].pop("comment", None)
+                if "rule" in entry:
+                    if self.legacy:
+                        entry["rule"]["expr"][-1] = {"drop": None}
+                    if self.terse_reads > 1:
+                        entry["rule"]["expr"][0]["counter"]["packets"] += 1
+            if self.legacy:
+                result["nftables"] = [entry for entry in result["nftables"] if "set" not in entry]
+            return json.dumps(result)
+        if arguments[:5] == ["--json", "list", "set", "inet", "geolatch"]:
+            name = arguments[-1]
+            result = {
+                "nftables": [
+                    copy.deepcopy(entry)
+                    for entry in self.table["nftables"]
+                    if entry.get("set", {}).get("name") == name
+                ]
+            }
+            if self.wrong_set:
+                result["nftables"][0]["set"]["name"] = "unrelated"
+            if self.bad_set:
+                result["nftables"][0]["set"]["elem"] = ["sensitive-invalid-address"]
+            return json.dumps(result)
+        if arguments == ["--terse", "list", "table", "inet", "geolatch"]:
+            return (
+                f'table inet geolatch {{\n comment "{OWNER}"\n'
+                f' chain prerouting {{\n comment "geolatch-revision:{"a" * 64}"\n }}\n}}\n'
+            )
+        raise AssertionError(f"Unexpected statistics command: {arguments}")
+
+
+def test_unique_traffic_stats_query_only_tracking_sets_and_use_final_counters():
+    backend = StatisticsNft()
+    result = backend.traffic_stats()
+    assert result == {
+        "unique_ips": 2,
+        "unique_limit_reached": False,
+        "tracking_available": True,
+        "dropped_packets": 102,
+        "dropped_bytes": 1000,
+        "counter_error": None,
+    }
+    assert backend.terse_reads == 2
+    assert [call[-1] for call in backend.calls if call[:3] == ["--json", "list", "set"]] == [
+        "dropped_sources_v4",
+        "dropped_sources_v6",
+    ]
+    assert not any(
+        call == ["--json", "list", "table", "inet", "geolatch"] or "geo_ir" in " ".join(call)
+        for call in backend.calls
+    )
+    assert "198.51.100.1" not in json.dumps(result)
+    assert "2001:db8" not in json.dumps(result)
+
+
+def test_existing_full_inspection_is_reused_without_any_command():
+    backend = StatisticsNft()
+    result = backend.traffic_stats(backend.table)
+    assert result["unique_ips"] == 2 and result["dropped_packets"] == 100
+    assert backend.traffic_stats(None)["unique_ips"] == 0
+    assert backend.calls == []
+
+
+def test_unique_stats_use_terse_text_for_legacy_comment_ownership():
+    backend = StatisticsNft()
+    backend.omit_comments = True
+    assert backend.traffic_stats()["unique_ips"] == 2
+    assert backend.calls.count(["--terse", "list", "table", "inet", "geolatch"]) == 2
+
+
+def test_legacy_rules_do_not_turn_packet_count_into_unique_ip_count():
+    backend = StatisticsNft()
+    backend.legacy = True
+    result = backend.traffic_stats()
+    assert result["unique_ips"] is None and result["dropped_packets"] == 100
+    assert result["counter_error"] == "tracking_not_enabled"
+    assert backend.terse_reads == 1
+    assert not any(call[:3] == ["--json", "list", "set"] for call in backend.calls)
+
+
+def test_identical_rules_replacement_during_polling_is_not_one_epoch():
+    backend = StatisticsNft()
+    backend.replace = True
+    with pytest.raises(NftError, match="epoch changed"):
+        backend.traffic_stats()
+
+
+def test_table_disappearing_during_polling_is_not_a_false_zero():
+    backend = StatisticsNft()
+    backend.disappear = True
+    with pytest.raises(NftError):
+        backend.traffic_stats()
+
+
+def test_tracking_set_must_be_the_requested_unchanged_set():
+    backend = StatisticsNft()
+    backend.wrong_set = True
+    with pytest.raises(NftError, match="statistics set changed"):
+        backend.traffic_stats()
+
+
+def test_malformed_source_stats_raise_an_error_without_leaking_address():
+    backend = StatisticsNft()
+    backend.bad_set = True
+    with pytest.raises(NftError, match="source address") as caught:
+        backend.traffic_stats()
+    assert "sensitive-invalid-address" not in str(caught.value)
+
+
+def test_polling_requires_successful_absence_read_and_never_masks_permissions():
+    backend = FakeNft()
+    assert backend.traffic_stats()["unique_ips"] == 0
+    backend.failure = "Operation not permitted"
+    with pytest.raises(NftError, match="not permitted"):
+        backend.traffic_stats()

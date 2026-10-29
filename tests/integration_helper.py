@@ -276,6 +276,46 @@ def setup_peer(peer: NetworkNamespace) -> None:
         peer.run("ip", "-6", "address", "add", f"2001:db8::{suffix}/64", "dev", "peer0", "nodad")
 
 
+def permanent_ipv6_neighbors(
+    peer: NetworkNamespace, local: str, remote: str, local_address: str, remote_address: str
+) -> None:
+    """Make synthetic container links independent of unrelated ND timing.
+
+    The source/server link deliberately keeps dynamic Neighbor Discovery, which
+    the regular IPv6 packet tests exercise. CI showed unresolved neighbors on
+    these separate ULA forwarding links before GeoLatch was installed. Pin only
+    their known veth endpoints using the MACs assigned by the actual test kernel.
+    """
+    local_mac = json.loads(command("ip", "-j", "link", "show", "dev", local))[0]["address"]
+    remote_mac = json.loads(peer.run("ip", "-j", "link", "show", "dev", remote))[0]["address"]
+    command(
+        "ip",
+        "-6",
+        "neighbor",
+        "replace",
+        remote_address,
+        "lladdr",
+        remote_mac,
+        "nud",
+        "permanent",
+        "dev",
+        local,
+    )
+    peer.run(
+        "ip",
+        "-6",
+        "neighbor",
+        "replace",
+        local_address,
+        "lladdr",
+        local_mac,
+        "nud",
+        "permanent",
+        "dev",
+        remote,
+    )
+
+
 def config() -> dict[str, Any]:
     from geolatch.config import default_config
 
@@ -312,15 +352,142 @@ DATABASES = {
 }
 
 
-def install(cfg: dict[str, Any] | None = None) -> Any:
+def install(
+    cfg: dict[str, Any] | None = None,
+    databases: dict[str, list[str]] | None = None,
+) -> Any:
     from geolatch.firewall import generate_rules
     from geolatch.nftables import Nftables
 
     nft = Nftables()
-    rules = generate_rules(cfg or config(), DATABASES)
+    rules = generate_rules(cfg or config(), DATABASES if databases is None else databases)
     nft.check(rules)
     nft.apply(rules)
     return nft
+
+
+def add_source(peer: NetworkNamespace, suffix: str) -> None:
+    peer.run("ip", "address", "add", f"198.51.100.{suffix}/24", "dev", "peer0")
+    peer.run("ip", "-6", "address", "add", f"2001:db8::{suffix}/64", "dev", "peer0", "nodad")
+
+
+def tracking_failures(nft: Any) -> int:
+    counters = [
+        counter
+        for counter in nft.counters()
+        if counter["comment"].startswith("GeoLatch tracking failure family=")
+    ]
+    assert len(counters) == 2, counters
+    return sum(counter["packets"] for counter in counters)
+
+
+def unique_sources(peer: NetworkNamespace, servers: EchoServers) -> None:
+    """Count actual dropped source addresses, not packets, countries or policies."""
+    from geolatch.firewall import generate_rules
+
+    for suffix in ("4", "5"):
+        add_source(peer, suffix)
+    cfg = config()
+    primary = copy.deepcopy(cfg["policies"][0])
+    primary["destinations"] += ["198.51.100.20", "2001:db8::20"]
+    overlap = copy.deepcopy(primary)
+    overlap["name"] = "same-sources-second-policy"
+    cfg["policies"] = [primary, overlap, cfg["policies"][2]]
+    cfg["allowlist"] = {"ipv4": ["198.51.100.3/32"], "ipv6": ["2001:db8::3/128"]}
+    databases = {
+        "IR:4": [f"198.51.100.{suffix}/32" for suffix in ("2", "3", "4")],
+        "IR:6": [f"2001:db8::{suffix}/128" for suffix in ("2", "3", "4")],
+    }
+    nft = install(cfg, databases)
+    statistics = nft.traffic_stats()
+    assert statistics["tracking_available"] and statistics["unique_ips"] == 0, statistics
+    assert not statistics["unique_limit_reached"], statistics
+    for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
+        for protocol in ("tcp", "udp"):
+            port = servers.ports[f"{protocol}{family}"]
+            # Allowlisted, unselected destination, and a non-country source.
+            assert probe(peer, prefix + "3", prefix + "10", protocol, port)
+            assert probe(peer, prefix + "2", prefix + "30", protocol, port)
+            assert probe(peer, prefix + "5", prefix + "10", protocol, port)
+    assert nft.traffic_stats()["unique_ips"] == 0
+    expected = 0
+    # A second set of destination ports also proves that the key is just source
+    # address; source port, destination, protocol and overlapping policy differ.
+    with EchoServers(("198.51.100.10", "2001:db8::10")) as extra_servers:
+        for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
+            for suffix in ("2", "4"):
+                expected += 1
+                for _ in range(2):
+                    for protocol in ("tcp", "udp"):
+                        port = servers.ports[f"{protocol}{family}"]
+                        for destination in ("10", "20"):
+                            assert not probe(
+                                peer, prefix + suffix, prefix + destination, protocol, port
+                            )
+                        assert not probe(
+                            peer,
+                            prefix + suffix,
+                            prefix + "10",
+                            protocol,
+                            extra_servers.ports[f"{protocol}{family}"],
+                        )
+                        statistics = nft.traffic_stats()
+                        assert statistics["unique_ips"] == expected, statistics
+                        assert not statistics["unique_limit_reached"], statistics
+    assert expected == 4
+    statistics = nft.traffic_stats()
+    assert statistics["dropped_packets"] >= 48, statistics
+    assert statistics["dropped_bytes"] > 0, statistics
+    assert tracking_failures(nft) == 0
+    snapshot = nft.snapshot()
+    assert snapshot is not None
+    nft.apply(None)
+    assert nft.traffic_stats()["unique_ips"] == 0
+    nft.apply(snapshot)
+    assert nft.traffic_stats()["unique_ips"] == 4
+    nft.apply(generate_rules(cfg, databases))
+    assert nft.traffic_stats()["unique_ips"] == 0
+
+
+def unique_source_capacity(peer: NetworkNamespace, servers: EchoServers) -> None:
+    """A full observation set must never let a country-blocked packet through."""
+    import geolatch.firewall as firewall
+
+    firewall.UNIQUE_IP_CAPACITY = 2
+    for suffix in ("4", "5"):
+        add_source(peer, suffix)
+    cfg = config()
+    cfg["policies"] = [cfg["policies"][0]]
+    databases = {
+        "IR:4": [f"198.51.100.{suffix}/32" for suffix in ("2", "3", "4")],
+        "IR:6": [f"2001:db8::{suffix}/128" for suffix in ("2", "3", "4")],
+    }
+    nft = install(cfg, databases)
+    for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
+        for suffix in ("2", "3"):
+            assert not probe(
+                peer, prefix + suffix, prefix + "10", "udp", servers.ports[f"udp{family}"]
+            )
+    full = nft.traffic_stats()
+    assert full["tracking_available"] and full["unique_ips"] == 4, full
+    assert full["unique_limit_reached"], full
+    assert tracking_failures(nft) == 0
+    for family, prefix in ((4, "198.51.100."), (6, "2001:db8::")):
+        for protocol in ("tcp", "udp"):
+            port = servers.ports[f"{protocol}{family}"]
+            # Neither source has room for insertion. Both still have to hit the
+            # unconditional DROP after the failed dynamic-set update statement.
+            for _ in range(2):
+                assert not probe(peer, prefix + "4", prefix + "10", protocol, port), (
+                    family,
+                    protocol,
+                )
+            assert probe(peer, prefix + "5", prefix + "10", protocol, port)
+            assert probe(peer, prefix + "4", prefix + "20", protocol, port)
+    after = nft.traffic_stats()
+    assert after["unique_ips"] == 4 and after["unique_limit_reached"], after
+    assert after["dropped_packets"] >= full["dropped_packets"] + 8, after
+    assert tracking_failures(nft) >= 8
 
 
 def packet_matrix(peer: NetworkNamespace, servers: EchoServers, family: int) -> None:
@@ -517,6 +684,7 @@ def dnat(peer: NetworkNamespace, servers: EchoServers) -> None:
         link(container, "docker0", "container0", "172.18.0.1/24", "fd00:18::1/64")
         container.run("ip", "address", "add", "172.18.0.2/24", "dev", "container0")
         container.run("ip", "-6", "address", "add", "fd00:18::2/64", "dev", "container0", "nodad")
+        permanent_ipv6_neighbors(container, "docker0", "container0", "fd00:18::1", "fd00:18::2")
         container.run("ip", "route", "add", "default", "via", "172.18.0.1")
         container.run("ip", "-6", "route", "add", "default", "via", "fd00:18::1")
         command("sysctl", "-w", "net.ipv4.ip_forward=1")
@@ -641,6 +809,7 @@ def scope(peer: NetworkNamespace, servers: EchoServers) -> None:
         link(transit, "transit0", "destination0", "172.19.0.1/24", "fd00:20::1/64")
         transit.run("ip", "address", "add", "172.19.0.2/24", "dev", "destination0")
         transit.run("ip", "-6", "address", "add", "fd00:20::2/64", "dev", "destination0", "nodad")
+        permanent_ipv6_neighbors(transit, "transit0", "destination0", "fd00:20::1", "fd00:20::2")
         transit.run("ip", "route", "add", "default", "via", "172.19.0.1")
         transit.run("ip", "-6", "route", "add", "default", "via", "fd00:20::1")
         peer.run("ip", "route", "add", "172.19.0.0/24", "via", "198.51.100.10")
@@ -693,6 +862,10 @@ def run(scenario: str, parent_namespace: str) -> None:
             transactions(peer, servers)
         elif scenario == "established_and_reply_direction":
             established(peer, servers)
+        elif scenario == "unique_dropped_sources":
+            unique_sources(peer, servers)
+        elif scenario == "unique_source_capacity_still_drops":
+            unique_source_capacity(peer, servers)
         elif scenario == "dnat_before_forwarding":
             dnat(peer, servers)
         elif scenario == "interface_and_transit_scope":
